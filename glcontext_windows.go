@@ -10,6 +10,7 @@
 package unison
 
 import (
+	"fmt"
 	"unsafe"
 
 	"github.com/richardwilkes/canvas/gpu/gl"
@@ -29,6 +30,18 @@ type nativeGLContext struct {
 // probe. Only accessed on the UI thread.
 var w32GLPipelineVerified bool
 
+// glPixelFormat is the pixel format selected for the OpenGL rendering pipeline, together with how many formats the
+// device offered, so that a failure anywhere in context creation can report exactly what was asked of the driver.
+type glPixelFormat struct {
+	pfd   w32.PIXELFORMATDESCRIPTOR
+	index int32 // 1-based; 0 when no suitable format was found
+	count int32
+}
+
+func (f *glPixelFormat) String() string {
+	return fmt.Sprintf("pixel format %d of %d (%v)", f.index, f.count, &f.pfd)
+}
+
 func (c *nativeGLContext) nativeCreate(wnd *Window) error {
 	hwnd := wnd.wnd.wnd
 	dc := w32.GetDC(hwnd)
@@ -41,9 +54,10 @@ func (c *nativeGLContext) nativeCreate(wnd *Window) error {
 			w32.ReleaseDC(hwnd, dc)
 		}
 	}()
-	format, pfd := w32ChooseGLPixelFormat(dc)
-	if format == 0 {
-		return errs.New("failed to choose pixel format for OpenGL context")
+	f := w32ChooseGLPixelFormat(dc)
+	if f.index == 0 {
+		return errs.Newf("failed to choose pixel format for OpenGL context: none of the %d pixel formats offered by the "+
+			"device is suitable", f.count)
 	}
 	// Prove that the pixel format and context creation actually work on a disposable hidden window before touching
 	// this window. SetPixelFormat is irreversible for a window, and a GL-capable format requires PFD_DOUBLEBUFFER,
@@ -52,14 +66,14 @@ func (c *nativeGLContext) nativeCreate(wnd *Window) error {
 	// any step leaves this window format-free and therefore still paintable by the fallback. Since a GL context may be
 	// made current with any DC that has the same pixel format on the same device, the probe's context is usable with
 	// this window once the same format has been committed to it below.
-	rc, err := w32CreateGLContextOnProbeWindow(format, &pfd)
+	rc, err := w32CreateGLContextOnProbeWindow(&f)
 	if err != nil {
 		return err
 	}
-	if !w32.SetPixelFormat(dc, format, &pfd) {
+	if err = w32.SetPixelFormat(dc, f.index, &f.pfd); err != nil {
 		// A SetPixelFormat failure leaves the window without a pixel format, so the CPU fallback remains safe.
 		w32.WglDeleteContext(rc)
-		return errs.New("failed to set pixel format for OpenGL context")
+		return errs.Newf("failed to set %v for OpenGL context: %s", &f, err)
 	}
 	c.hwnd = hwnd
 	c.dc = dc
@@ -68,25 +82,29 @@ func (c *nativeGLContext) nativeCreate(wnd *Window) error {
 	return nil
 }
 
-// w32ChooseGLPixelFormat returns the index and descriptor of the first pixel format suitable for the OpenGL rendering
-// pipeline, or 0 if there is none.
-func w32ChooseGLPixelFormat(dc w32.HDC) (int32, w32.PIXELFORMATDESCRIPTOR) {
-	var pfd w32.PIXELFORMATDESCRIPTOR
-	count := w32.DescribePixelFormat(dc, 1, uint32(unsafe.Sizeof(pfd)), nil)
-	for i := int32(1); i <= count; i++ {
-		w32.DescribePixelFormat(dc, i, uint32(unsafe.Sizeof(pfd)), &pfd)
-		if w32.PixelFormatSuitableForOpenGL(&pfd) {
-			return i, pfd
+// w32ChooseGLPixelFormat returns the first pixel format suitable for the OpenGL rendering pipeline. The result has an
+// index of 0 if there is none, in which case its descriptor is zeroed.
+func w32ChooseGLPixelFormat(dc w32.HDC) glPixelFormat {
+	var f glPixelFormat
+	f.count = w32.DescribePixelFormat(dc, 1, uint32(unsafe.Sizeof(f.pfd)), nil)
+	for i := int32(1); i <= f.count; i++ {
+		w32.DescribePixelFormat(dc, i, uint32(unsafe.Sizeof(f.pfd)), &f.pfd)
+		if w32.PixelFormatSuitableForOpenGL(&f.pfd) {
+			f.index = i
+			return f
 		}
 	}
-	return 0, pfd
+	f.pfd = w32.PIXELFORMATDESCRIPTOR{}
+	return f
 }
 
 // w32CreateGLContextOnProbeWindow creates an OpenGL 3.2 context for the given pixel format using a hidden, throwaway
 // window, so that no failure along the way ever commits the format to a real window. The first successful call also
 // verifies that the library's GL direct context can be created, since that failure would otherwise be discovered at
-// first canvas preparation, after a real window's format had already been committed.
-func w32CreateGLContextOnProbeWindow(format int32, pfd *w32.PIXELFORMATDESCRIPTOR) (w32.HGLRC, error) {
+// first canvas preparation, after a real window's format had already been committed. Every failure names the pixel
+// format and carries the driver's error code, since a bug report is usually the only chance to learn why a driver
+// refused.
+func w32CreateGLContextOnProbeWindow(f *glPixelFormat) (w32.HGLRC, error) {
 	probe := w32.CreateWindowExW(0, wndProcClassName, "", w32.WS_CLIPSIBLINGS|w32.WS_CLIPCHILDREN, 0, 0, 1, 1, 0, 0,
 		w32MainInstance, 0)
 	if probe == 0 {
@@ -98,36 +116,36 @@ func w32CreateGLContextOnProbeWindow(format int32, pfd *w32.PIXELFORMATDESCRIPTO
 		return 0, errs.New("failed to get device context for probe window")
 	}
 	defer w32.ReleaseDC(probe, dc)
-	if !w32.SetPixelFormat(dc, format, pfd) {
-		return 0, errs.New("failed to set pixel format for OpenGL context")
+	if err := w32.SetPixelFormat(dc, f.index, &f.pfd); err != nil {
+		return 0, errs.Newf("failed to set %v for OpenGL context on probe window: %s", f, err)
 	}
-	fakeRC := w32.WglCreateContext(dc)
-	if fakeRC == 0 {
-		return 0, errs.New("failed to create fake OpenGL context")
+	fakeRC, err := w32.WglCreateContext(dc)
+	if err != nil {
+		return 0, errs.Newf("failed to create fake OpenGL context with %v: %s", f, err)
 	}
 	defer w32.WglDeleteContext(fakeRC)
-	if !w32.WglMakeCurrent(dc, fakeRC) {
-		return 0, errs.New("failed to make fake OpenGL context current")
+	if err = w32.WglMakeCurrent(dc, fakeRC); err != nil {
+		return 0, errs.Newf("failed to make fake OpenGL context current with %v: %s", f, err)
 	}
-	defer w32.WglMakeCurrent(0, 0)
-	rc := w32.WglCreateContextAttribsARB(dc, 0, []int32{
+	defer w32.WglMakeCurrent(0, 0) //nolint:errcheck // Nothing useful can be done about a failure to release
+	rc, err := w32.WglCreateContextAttribsARB(dc, 0, []int32{
 		w32.WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
 		w32.WGL_CONTEXT_MINOR_VERSION_ARB, 2,
 		0,
 	})
-	if rc == 0 {
-		return 0, errs.New("failed to create OpenGL context")
+	if err != nil {
+		return 0, errs.Newf("failed to create OpenGL 3.2 context with %v: %s", f, err)
 	}
 	if !w32GLPipelineVerified {
-		if !w32.WglMakeCurrent(dc, rc) {
+		if err = w32.WglMakeCurrent(dc, rc); err != nil {
 			w32.WglDeleteContext(rc)
-			return 0, errs.New("failed to make OpenGL context current")
+			return 0, errs.Newf("failed to make OpenGL context current with %v: %s", f, err)
 		}
 		ctx := gl.MakeGLDirectContext(defaultOpenGL(), nil)
 		if ctx == nil {
 			// Deleting a context that is current on the calling thread implicitly makes it not current first.
 			w32.WglDeleteContext(rc)
-			return 0, errs.New("unable to create an OpenGL rendering context")
+			return 0, errs.Newf("unable to create an OpenGL rendering context with %v", f)
 		}
 		ctx.Destroy() // Destroy requires the context to be current, which it still is here.
 		w32GLPipelineVerified = true
@@ -136,11 +154,11 @@ func w32CreateGLContextOnProbeWindow(format int32, pfd *w32.PIXELFORMATDESCRIPTO
 }
 
 func (c *nativeGLContext) nativeMakeCurrent() {
-	w32.WglMakeCurrent(c.dc, c.rc)
+	w32.WglMakeCurrent(c.dc, c.rc) //nolint:errcheck // Rendering will simply produce nothing if this fails
 }
 
 func (c *nativeGLContext) nativeReleaseCurrent() {
-	w32.WglMakeCurrent(0, 0)
+	w32.WglMakeCurrent(0, 0) //nolint:errcheck // Nothing useful can be done about a failure to release
 }
 
 func (c *nativeGLContext) nativeSwapBuffers() {

@@ -119,3 +119,19 @@ func TestGLPixelFormatExcludesGDI(t *testing.T) {
 	pfd.DwFlags &^= PFD_DOUBLEBUFFER
 	c.False(PixelFormatSuitableForOpenGL(&pfd))
 }
+
+func TestPixelFormatDescriptorString(t *testing.T) {
+	c := check.New(t)
+	pfd := glCapablePFD()
+	pfd.ColorBits = 32
+	pfd.DwFlags |= PFD_SUPPORT_COMPOSITION
+	c.Equal("flags=0x8025(DOUBLEBUFFER|DRAW_TO_WINDOW|SUPPORT_OPENGL|SUPPORT_COMPOSITION) type=RGBA color=32 "+
+		"rgba=8/8/8/8 depth=24 stencil=8 accum=0 aux=0 layer=0", pfd.String())
+
+	// Unknown bits are kept, as a raw value, and a zero descriptor still describes itself.
+	pfd = PIXELFORMATDESCRIPTOR{DwFlags: PFD_GENERIC_FORMAT | 0x10000, IPixelType: PFD_TYPE_COLORINDEX}
+	c.Equal("flags=0x10040(GENERIC_FORMAT|0x10000) type=COLORINDEX color=0 rgba=0/0/0/0 depth=0 stencil=0 accum=0 "+
+		"aux=0 layer=0", pfd.String())
+	pfd = PIXELFORMATDESCRIPTOR{IPixelType: 7}
+	c.Equal("flags=0x0 type=7 color=0 rgba=0/0/0/0 depth=0 stencil=0 accum=0 aux=0 layer=0", pfd.String())
+}

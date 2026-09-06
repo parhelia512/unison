@@ -255,8 +255,7 @@ func breakTextIntoLabels(panel *Panel, text string, font Font, addSpaceAbove boo
 // from the error for its detail. The full error will be logged via errs.Log(). Embedded line feeds are OK.
 func ErrorDialogWithError(primary string, detail error) {
 	var msg string
-	var err errs.StackError
-	if errors.As(detail, &err) {
+	if err, ok := errors.AsType[errs.StackError](detail); ok {
 		errs.Log(detail)
 		msg = err.Message()
 	} else {

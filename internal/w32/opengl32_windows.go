@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/richardwilkes/toolbox/v2/errs"
 	"golang.org/x/sys/windows"
 )
 
@@ -99,24 +100,43 @@ const (
 	WGL_TYPE_RGBA_ARB                           = 0x202B
 )
 
-func WglCreateContext(dc HDC) HGLRC {
-	//nolint:errcheck // The result is enough for our purposes, and the error is not useful.
-	ret, _, _ := wglCreateContextProc.Call(uintptr(dc))
-	return HGLRC(ret)
+// Error codes defined by WGL_ARB_create_context, which FormatMessage knows nothing about.
+const (
+	ERROR_INVALID_VERSION_ARB = 0x2095
+	ERROR_INVALID_PROFILE_ARB = 0x2096
+)
+
+// wglErrorNames supplies text for the WGL extension error codes when reporting a failed call.
+var wglErrorNames = map[syscall.Errno]string{
+	ERROR_INVALID_VERSION_ARB: "ERROR_INVALID_VERSION_ARB",
+	ERROR_INVALID_PROFILE_ARB: "ERROR_INVALID_PROFILE_ARB",
 }
 
-// WglCreateContextAttribsARB creates a context via the WGL_ARB_create_context extension. Returns 0 if the extension is
-// unavailable (e.g. under RDP or basic display adapters), letting the caller fail gracefully.
-func WglCreateContextAttribsARB(dc HDC, shareCtx HGLRC, attribList []int32) HGLRC {
+// WglCreateContext creates a legacy OpenGL rendering context for a device context that has already had its pixel
+// format set. A failure is reported along with the Windows last-error code, which is the only clue the driver gives as
+// to why it refused.
+func WglCreateContext(dc HDC) (HGLRC, error) {
+	ret, _, e := wglCreateContextProc.Call(uintptr(dc))
+	if ret == 0 {
+		return 0, lastError("wglCreateContext", e, wglErrorNames)
+	}
+	return HGLRC(ret), nil
+}
+
+// WglCreateContextAttribsARB creates a context via the WGL_ARB_create_context extension. The extension may be
+// unavailable (e.g. under RDP or basic display adapters), which is reported as an error like any other failure.
+func WglCreateContextAttribsARB(dc HDC, shareCtx HGLRC, attribList []int32) (HGLRC, error) {
 	if wglCreateContextAttribsARBProc == 0 {
 		if wglCreateContextAttribsARBProc = WglGetProcAddress("wglCreateContextAttribsARB"); wglCreateContextAttribsARBProc == 0 {
-			return 0
+			return 0, errs.New("wglCreateContextAttribsARB is not available")
 		}
 	}
-	//nolint:errcheck // The result is enough for our purposes, and the error is not useful.
-	r, _, _ := syscall.SyscallN(wglCreateContextAttribsARBProc, uintptr(dc), uintptr(shareCtx),
+	r, _, e := syscall.SyscallN(wglCreateContextAttribsARBProc, uintptr(dc), uintptr(shareCtx),
 		uintptr(unsafe.Pointer(&attribList[0])))
-	return HGLRC(r)
+	if r == 0 {
+		return 0, lastError("wglCreateContextAttribsARB", e, wglErrorNames)
+	}
+	return HGLRC(r), nil
 }
 
 // WglGetPixelFormatAttribivARB https://registry.khronos.org/OpenGL/extensions/ARB/WGL_ARB_pixel_format.txt
@@ -163,8 +183,12 @@ func WglDeleteContext(hglrc HGLRC) bool {
 }
 
 // WglMakeCurrent https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-wglmakecurrent
-func WglMakeCurrent(hdc HDC, hglrc HGLRC) bool {
-	//nolint:errcheck // The result is enough for our purposes, and the error is not useful.
-	ret, _, _ := wglMakeCurrentProc.Call(uintptr(hdc), uintptr(hglrc))
-	return ret&0xff != 0
+// WglMakeCurrent makes the context current on the calling thread, or releases the current context when both
+// arguments are 0. A failure is reported along with the Windows last-error code.
+func WglMakeCurrent(hdc HDC, hglrc HGLRC) error {
+	ret, _, e := wglMakeCurrentProc.Call(uintptr(hdc), uintptr(hglrc))
+	if ret&0xff == 0 {
+		return lastError("wglMakeCurrent", e, wglErrorNames)
+	}
+	return nil
 }

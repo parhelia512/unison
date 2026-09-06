@@ -9,6 +9,11 @@
 
 package w32
 
+import (
+	"fmt"
+	"strings"
+)
+
 // This file deliberately has no _windows suffix so that the pixel format selection logic can be tested on any
 // platform.
 
@@ -29,6 +34,9 @@ const (
 	PFD_SWAP_COPY             = 0x00000400
 	PFD_SWAP_LAYER_BUFFERS    = 0x00000800
 	PFD_GENERIC_ACCELERATED   = 0x00001000
+	PFD_SUPPORT_DIRECTDRAW    = 0x00002000
+	PFD_DIRECT3D_ACCELERATED  = 0x00004000
+	PFD_SUPPORT_COMPOSITION   = 0x00008000
 	PFD_DEPTH_DONTCARE        = 0x20000000
 	PFD_DOUBLEBUFFER_DONTCARE = 0x40000000
 	PFD_STEREO_DONTCARE       = 0x80000000
@@ -76,4 +84,64 @@ func PixelFormatSuitableForOpenGL(pfd *PIXELFORMATDESCRIPTOR) bool {
 	return pfd.IPixelType == PFD_TYPE_RGBA &&
 		pfd.RedBits == 8 && pfd.GreenBits == 8 && pfd.BlueBits == 8 && pfd.AlphaBits == 8 &&
 		pfd.DepthBits == 24 && pfd.StencilBits == 8
+}
+
+// pfdFlagNames lists the PFD_* flags in bit order, for String.
+var pfdFlagNames = []struct {
+	name string
+	flag uint32
+}{
+	{"DOUBLEBUFFER", PFD_DOUBLEBUFFER},
+	{"STEREO", PFD_STEREO},
+	{"DRAW_TO_WINDOW", PFD_DRAW_TO_WINDOW},
+	{"DRAW_TO_BITMAP", PFD_DRAW_TO_BITMAP},
+	{"SUPPORT_GDI", PFD_SUPPORT_GDI},
+	{"SUPPORT_OPENGL", PFD_SUPPORT_OPENGL},
+	{"GENERIC_FORMAT", PFD_GENERIC_FORMAT},
+	{"NEED_PALETTE", PFD_NEED_PALETTE},
+	{"NEED_SYSTEM_PALETTE", PFD_NEED_SYSTEM_PALETTE},
+	{"SWAP_EXCHANGE", PFD_SWAP_EXCHANGE},
+	{"SWAP_COPY", PFD_SWAP_COPY},
+	{"SWAP_LAYER_BUFFERS", PFD_SWAP_LAYER_BUFFERS},
+	{"GENERIC_ACCELERATED", PFD_GENERIC_ACCELERATED},
+	{"SUPPORT_DIRECTDRAW", PFD_SUPPORT_DIRECTDRAW},
+	{"DIRECT3D_ACCELERATED", PFD_DIRECT3D_ACCELERATED},
+	{"SUPPORT_COMPOSITION", PFD_SUPPORT_COMPOSITION},
+	{"DEPTH_DONTCARE", PFD_DEPTH_DONTCARE},
+	{"DOUBLEBUFFER_DONTCARE", PFD_DOUBLEBUFFER_DONTCARE},
+	{"STEREO_DONTCARE", PFD_STEREO_DONTCARE},
+}
+
+// String returns a one-line description of the descriptor for diagnostics: the raw flags with their names decoded,
+// followed by the pixel type and the buffer depths.
+func (pfd *PIXELFORMATDESCRIPTOR) String() string {
+	var buffer strings.Builder
+	fmt.Fprintf(&buffer, "flags=0x%X", pfd.DwFlags)
+	var names []string
+	remaining := pfd.DwFlags
+	for _, one := range pfdFlagNames {
+		if remaining&one.flag != 0 {
+			names = append(names, one.name)
+			remaining &^= one.flag
+		}
+	}
+	if remaining != 0 {
+		names = append(names, fmt.Sprintf("0x%X", remaining))
+	}
+	if len(names) != 0 {
+		fmt.Fprintf(&buffer, "(%s)", strings.Join(names, "|"))
+	}
+	buffer.WriteString(" type=")
+	switch pfd.IPixelType {
+	case PFD_TYPE_RGBA:
+		buffer.WriteString("RGBA")
+	case PFD_TYPE_COLORINDEX:
+		buffer.WriteString("COLORINDEX")
+	default:
+		fmt.Fprintf(&buffer, "%d", pfd.IPixelType)
+	}
+	fmt.Fprintf(&buffer, " color=%d rgba=%d/%d/%d/%d depth=%d stencil=%d accum=%d aux=%d layer=%d", pfd.ColorBits,
+		pfd.RedBits, pfd.GreenBits, pfd.BlueBits, pfd.AlphaBits, pfd.DepthBits, pfd.StencilBits, pfd.AccumBits,
+		pfd.AuxBuffers, pfd.ILayerType)
+	return buffer.String()
 }

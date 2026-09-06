@@ -158,10 +158,14 @@ func DescribePixelFormat(hdc HDC, iPixelFormat int32, nBytes uint32, ppfd *PIXEL
 }
 
 // SetPixelFormat https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-setpixelformat
-func SetPixelFormat(hdc HDC, iPixelFormat int32, pfd *PIXELFORMATDESCRIPTOR) bool {
-	//nolint:errcheck // The result is enough for our purposes, and the error is not useful.
-	ret, _, _ := setPixelFormatProc.Call(uintptr(hdc), uintptr(iPixelFormat), uintptr(unsafe.Pointer(pfd)))
-	return ret&0xff != 0
+//
+// A failure is reported along with the Windows last-error code.
+func SetPixelFormat(hdc HDC, iPixelFormat int32, pfd *PIXELFORMATDESCRIPTOR) error {
+	ret, _, e := setPixelFormatProc.Call(uintptr(hdc), uintptr(iPixelFormat), uintptr(unsafe.Pointer(pfd)))
+	if ret&0xff == 0 {
+		return lastError("SetPixelFormat", e, nil)
+	}
+	return nil
 }
 
 // SwapBuffers https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-swapbuffers
